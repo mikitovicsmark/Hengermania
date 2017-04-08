@@ -61,6 +61,8 @@ struct vec3 {
 	}
 	float Length() const { return sqrtf(x * x + y * y + z * z); }
 
+	void Normalize() { *this = (*this) * (1 / Length()); }
+
 	operator float*() { return &x; }
 };
 
@@ -145,6 +147,21 @@ struct Hit {
 	Material* material;
 	Hit() { t = -1; };
 };
+
+struct Intersectable {
+	Material* material;
+	virtual Hit intersect(const Ray& ray) = 0;
+};
+
+class Ray {
+	vec3 start, dir;
+public:
+	Ray(vec3 start0, vec3 dir0) {
+		start = start0; dir = dir0; dir.Normalize();
+	}
+	vec3 Dir() { return dir; }
+	vec3 Start() { return start; }
+};
 
 class Material {
 	public:
