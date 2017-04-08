@@ -34,9 +34,19 @@ struct vec3 {
 
 	vec3 operator*(float a) const { return vec3(x * a, y * a, z * a); }
 
+	vec3 operator/(float a) const { return vec3(x / a, y / a, z / a); }
+
 	vec3 operator+(const vec3& v) const {
 		return vec3(x + v.x, y + v.y, z + v.z);
 	}
+
+	vec3 operator+=(const vec3& vec) {
+		this->x += vec.x;
+		this->y += vec.y;
+		this->z += vec.z;
+		return *this;
+	}
+
 	vec3 operator-(const vec3& v) const {
 		return vec3(x - v.x, y - v.y, z - v.z);
 	}
@@ -126,21 +136,35 @@ const char *fragmentSource = R"(
 	}
 )";
 
-
-struct vec4 {
-	float v[4];
-
-	vec4(float x = 0, float y = 0, float z = 0, float w = 1) {
-		v[0] = x; v[1] = y; v[2] = z; v[3] = w;
-	}
-};
+const float EPSILON = 1e-5;
 
 struct Hit {
 	float t;
-	vec4 position;
-	vec4 normal;
+	vec3 position;
+	vec3 normal;
 	Material* material;
 	Hit() { t = -1; };
+};
+
+class Material {
+	public:
+		vec3 kd;
+		vec3 ks;
+		float n;
+		vec3 Brdf(vec3 inDir, vec3 norm, vec3 outDir) {
+
+			float cosIn = -1.0f * dot(inDir,norm);
+			if (cosIn <= EPSILON) {
+				return vec3(); // ha az anyag belsejébol jövünk
+			}
+			vec3 retColor = kd; // diffúz BRDF
+			vec3 reflDir = norm * (2.0 * cosIn) + inDir; // tükörirány
+			float cosReflOut = dot(reflDir,outDir); // tükörirány-nézeti szöge
+			if (cosReflOut > EPSILON) { // spekuláris BRDF
+				retColor += ks * pow(cosReflOut, n) / cosIn;
+			}
+			return retColor;
+		}
 };
 
 // handle of the shader program
