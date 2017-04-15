@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <math.h>
 
+#include <vector>
+
 #if defined(__APPLE__)
 #include <GLUT/GLUT.h>
 #include <OpenGL/gl3.h>
@@ -60,8 +62,6 @@ struct vec3 {
 		return (*this) * (1 / (Length() + 0.000001));
 	}
 	float Length() const { return sqrtf(x * x + y * y + z * z); }
-
-	void Normalize() { *this = (*this) * (1 / Length()); }
 
 	operator float*() { return &x; }
 };
@@ -138,36 +138,42 @@ const char *fragmentSource = R"(
 	}
 )";
 
+const int MAXDEPTH = 3;
 const float EPSILON = 1e-5;
 
 struct Hit {
 	float t;
 	vec3 position;
 	vec3 normal;
-	Material* material;
+	Material material;
 	Hit() { t = -1; };
 };
 
 struct Intersectable {
-	Material* material;
-	virtual Hit intersect(const Ray& ray) = 0;
+	Material material;
+	virtual Hit intersect(const Ray& ray) const { return Hit(); }
 };
 
 class Ray {
 	vec3 start, dir;
 public:
 	Ray(vec3 start0, vec3 dir0) {
-		start = start0; dir = dir0; dir.Normalize();
+		start = start0; dir = dir0; dir.normalize();
 	}
 	vec3 Dir() { return dir; }
 	vec3 Start() { return start; }
-};
+};
+
 
 class Material {
 	public:
-		vec3 kd;
-		vec3 ks;
-		float n;
+		vec3 ka, kd, ks;
+		float n, k;
+		boolean rough, reflective, refractive;
+
+		void SetDiffuseColor(vec3 Kd) { kd = Kd / M_PI; }
+		void SetSpecularColor(vec3 Ks) { ks = Ks * (n + 2) / M_PI / 2.0; }
+
 		vec3 Brdf(vec3 inDir, vec3 norm, vec3 outDir) {
 
 			float cosIn = -1.0f * dot(inDir,norm);
@@ -182,6 +188,61 @@ class Material {
 			}
 			return retColor;
 		}
+};
+
+class Camera {
+public:
+	vec3 position;
+};
+
+class Light {
+public:
+	vec3 color;
+	vec3 position;
+};
+
+class Scene {
+public:
+	Camera camera;
+	std::vector<Material> materials;
+	std::vector<Intersectable> objects;
+	std::vector<Light> lights;
+
+	Hit firstIntersect(Ray ray) {
+		Hit bestHit;
+		for (Intersectable obj : objects) {
+			Hit hit = obj.intersect(ray);
+			if (hit.t > 0 && (bestHit.t < 0 || hit.t < bestHit.t)) {
+				bestHit = hit;
+			}
+		}
+		return bestHit;
+	}
+
+	int sign(float f) {
+		return f < 0 ? -1 : 1;
+	}
+
+	vec3 trace(Ray ray, int depth) {
+		vec3 La;
+		if (depth > MAXDEPTH) {
+			return La;
+		}
+		Hit hit = firstIntersect(ray);
+		if (hit.t < 0) { return La; };
+		vec3 outRadiance;
+		if (hit.material.rough) {
+			outRadiance = La*hit.material.ks;
+			for (Light l : lights) {
+				Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, ray.Dir()*-1)), (l.position*-1).normalize());
+				Hit shadowHit = firstIntersect(shadowRay);
+				if (shadowHit.t < 0 || shadowHit.t > 2) {
+					outRadiance += hit.material.shade
+				}
+			}
+		}
+		
+	}
 };
 
 // handle of the shader program
