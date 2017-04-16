@@ -59,18 +59,18 @@ struct vec3 {
 		return vec3(-x, -y, -z);
 	}
 	vec3 normalize() const {
-		return (*this) * (1 / (Length() + 0.000001));
+		return (*this) * (1.0f / (Length() + 0.000001));
 	}
 	float Length() const { return sqrtf(x * x + y * y + z * z); }
 
 	operator float*() { return &x; }
 };
 
-float dot(const vec3& v1, const vec3& v2) {
+float dot(vec3 v1, vec3 v2) {
 	return (v1.x * v2.x + v1.y * v2.y + v1.z * v2.z);
 }
 
-vec3 cross(const vec3& v1, const vec3& v2) {
+vec3 cross(vec3 v1, vec3 v2) {
 	return vec3(v1.y * v2.z - v1.z * v2.y, v1.z * v2.x - v1.x * v2.z, v1.x * v2.y - v1.y * v2.x);
 }
 
@@ -139,37 +139,13 @@ const char *fragmentSource = R"(
 )";
 
 const int MAXDEPTH = 3;
-const float EPSILON = 1e-5;
-
-struct Hit {
-	float t;
-	vec3 position;
-	vec3 normal;
-	Material material;
-	Hit() { t = -1; };
-};
-
-struct Intersectable {
-	Material material;
-	virtual Hit intersect(const Ray& ray) const { return Hit(); }
-};
-
-class Ray {
-	vec3 start, dir;
-public:
-	Ray(vec3 start0, vec3 dir0) {
-		start = start0; dir = dir0; dir.normalize();
-	}
-	vec3 Dir() { return dir; }
-	vec3 Start() { return start; }
-};
-
+const float EPSILON = 0.00001f;
 
 class Material {
 	public:
-		vec3 ka, kd, ks, F0;
-		float n, k;
-		boolean reflective, refractive;
+		vec3 kd, ks, F0;
+		float n;
+		boolean reflective, refractive, rough;
 
 		void SetDiffuseColor(vec3 Kd) { kd = Kd / M_PI; }
 		void SetSpecularColor(vec3 Ks) { ks = Ks * (n + 2) / M_PI / 2.0; }
@@ -206,18 +182,69 @@ class Material {
 		}
 };
 
+struct Hit {
+	float t;
+	vec3 position;
+	vec3 normal;
+	Material* material;
+	Hit() { t = -1; };
+};
+
+class Ray {
+public:
+	vec3 start, dir;
+	Ray(vec3 start0, vec3 dir0) {
+		start = start0; dir = dir0; dir.normalize();
+	}
+};
+
+struct Intersectable {
+	Material material;
+	virtual Hit intersect(const Ray ray) = 0;
+};
+
+class Sphere : public Intersectable {
+	vec3 center;
+	float radius;
+public:
+	Sphere(vec3 c, float r) {
+		center = c;
+		radius = r;
+	}
+	Hit intersect(Ray ray) {
+		Hit retval;
+		retval.material = &material;
+
+		float a = dot(ray.dir, ray.dir);
+		float b = dot((ray.start - center), (ray.dir * 2));
+		float c = dot((ray.start - center), (ray.start - center) - (radius*radius));
+
+		float d = b * b - 4 * a * c;
+		if (d < 0)	//prevent getting rekt
+			retval.t = -1.0;
+		else {
+			float t1 = (-1.0 * b - sqrt(b * b - 4 * a * c)) / 2.0 * a;
+			float t2 = (-1.0 * b + sqrt(b * b - 4 * a * c)) / 2.0 * a;
+			if (t1<t2)
+				retval.t = t1;
+			else
+				retval.t = t2;
+		}
+		if (fabs(retval.t) < EPSILON)
+			retval.t = -1;
+		retval.position = ray.start + ray.dir * retval.t;
+		retval.normal = getNormal(ray.start + ray.dir * retval.t);
+		return retval;
+	}
+	vec3 getNormal(vec3 intersect) {
+		vec3 retval = (intersect - center) * 2;
+		return retval.normalize();
+	}
+};
+
 class Camera {
 public:
-	vec3 eyep; // pozíció
-	vec3 lookp; // hova néz
-	vec3 updir; // felfele irány
-	float viewdist; // fókusztávolság
-	float fov, hfov, vfov; // látószögek radiánban
-	float nearClip, farClip; // közeli és távoli vágósik
-	int hres, vres; // szélesség, magasság pixelben
-					// kamera koordinátarendszer: X=jobbra, Y=le, Z=nézeti irány
-	float X, Y, Z;
-	float pixh, pixv; // egy pixel szélessége, magassága
+	vec3 position, lookat, up, right;
 };
 
 class Light {
@@ -229,14 +256,13 @@ public:
 class Scene {
 public:
 	Camera camera;
-	std::vector<Material> materials;
-	std::vector<Intersectable> objects;
+	std::vector<Intersectable*> objects;
 	std::vector<Light> lights;
 
 	Hit firstIntersect(Ray ray) {
 		Hit bestHit;
-		for (Intersectable obj : objects) {
-			Hit hit = obj.intersect(ray);
+		for (Intersectable* obj : objects) {
+			Hit hit = obj->intersect(ray);
 			if (hit.t > 0 && (bestHit.t < 0 || hit.t < bestHit.t)) {
 				bestHit = hit;
 			}
@@ -244,17 +270,13 @@ public:
 		return bestHit;
 	}
 
-	//-----------------------------------------------------------------
 	Ray GetRay(int x, int y) {
-		//-----------------------------------------------------------------
-		float h = camera.pixh; // pixel horizontális mérete
-		float v = camera.pixv; // pixel vertikális mérete
-									 // az aktuális pixel középpontja
-		float pixX = -h * camera.hres / 2.0 + x * h + h / 2.0;
-		float pixY = -v * camera.vres / 2.0 + y * v + v / 2.0;
-		vec3 rayDir = (camera.Z + pixX*camera.X + pixY*camera.Y);
-		rayDir.normalize();
-		return Ray(camera.eyep, rayDir); // a sugár a szemb˝ol
+		vec3 _lookat = camera.lookat;
+		vec3 _right = camera.right*(x - windowWidth / 2.0) / (windowWidth / 2.0);
+		vec3 _up = camera.up*(y - windowHeight / 2.0) / (windowHeight / 2.0);
+		Ray ray(camera.position, (_lookat + _right + _up).normalize());
+		return ray;
+
 	}
 
 	int sign(float f) {
@@ -269,24 +291,27 @@ public:
 		Hit hit = firstIntersect(ray);
 		if (hit.t < 0) { return La; };
 		vec3 outRadiance;
-		outRadiance = La*hit.material.ka;
-		for (Light l : lights) {
-			Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.Dir()*-1).normalize())), (l.position*-1).normalize());
-			Hit shadowHit = firstIntersect(shadowRay);
-			if (shadowHit.t < 0 || shadowHit.t > 2) {
-				outRadiance += hit.material.shade(hit.normal, (ray.Dir()*-1).normalize(), (l.position*-1).normalize(), l.color);
+		outRadiance = La*hit.material->kd;
+		if (hit.material->rough) {
+			for (Light l : lights) {
+				Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.dir).normalize())), (l.position).normalize());
+				Hit shadowHit = firstIntersect(shadowRay);
+				if (shadowHit.t < 0 || shadowHit.t > 10000) {
+					outRadiance += hit.material->shade(hit.normal, (ray.dir).normalize(), (l.position).normalize(), l.color);
+				}
 			}
 		}
-		if (hit.material.reflective) {
-			vec3 reflectionDir = hit.material.reflect(ray.Dir(), hit.normal).normalize();
-			Ray reflectedRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.Dir()*-1).normalize())), reflectionDir);
-			outRadiance += trace(reflectedRay, depth + 1)*hit.material.Fresnel(ray.Dir().normalize(), hit.normal);
+		if (hit.material->reflective) {
+			vec3 reflectionDir = hit.material->reflect(ray.dir, hit.normal).normalize();
+			Ray reflectedRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.dir).normalize())), reflectionDir);
+			outRadiance += trace(reflectedRay, depth + 1)*hit.material->Fresnel(ray.dir.normalize(), hit.normal);
 		}
-		if (hit.material.refractive) {
-			vec3 refractionDir = hit.material.refract(ray.Dir(), hit.normal).normalize();
-			Ray refractedRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.Dir()*-1).normalize())), refractionDir);
-			outRadiance += trace(refractedRay, depth + 1)*(vec3(1, 1, 1) - hit.material.Fresnel(ray.Dir().normalize(), hit.normal));
+		if (hit.material->refractive) {
+			vec3 refractionDir = hit.material->refract(ray.dir, hit.normal).normalize();
+			Ray refractedRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.dir).normalize())), refractionDir);
+			outRadiance += trace(refractedRay, depth + 1)*(vec3(1, 1, 1) - hit.material->Fresnel(ray.dir.normalize(), hit.normal));
 		}
+		//printf("%f, %f, %f\n", outRadiance.x, outRadiance.y, outRadiance.z);
 		return outRadiance;
 		
 	}
@@ -346,11 +371,37 @@ vec3 background[windowWidth * windowHeight];	// The image, which stores the ray 
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
 
+	Material kek;
+	kek.F0 = 0.5f;
+	kek.kd = 0.5f;
+	kek.ks = 0.5f;
+	kek.n = 0.5f;
+	kek.rough = true;
+
+	Light l;
+	l.color = vec3(0.5f, 0.5f, 0.5f);
+	l.position = vec3(100.0f, 300.0f, 300.0f);
+
+	Sphere s = Sphere(vec3(0,0,300.0f), 100.0f);
+	s.material = kek;
+
+	Camera c;
+	c.position = vec3(0, 0, -500.0f);
+	c.lookat = vec3(0, 0, 1.0f);
+	c.up = vec3(0,1.0f,0);
+	c.right = vec3(1.0f, 0, 0);
+
+	scene.objects.push_back(&s);
+	scene.lights.push_back(l);
+
 	// Ray tracing fills the image called background
 	for (int x = 0; x < windowWidth; x++) {
 		for (int y = 0; y < windowHeight; y++) {
 			Ray r = scene.GetRay(x, y);
 			background[y * windowWidth + x] = scene.trace(r, 0); // vec3((float)x / windowWidth, (float)y / windowHeight, 0);
+			if (background[y * windowWidth + x].x > 0.0f || background[y * windowWidth + x].y > 0.0f || background[y * windowWidth + x].z > 0.0f) {
+				printf("%f, %f, %f\n", background[y * windowWidth + x].x, background[y * windowWidth + x].y, background[y * windowWidth + x].z);
+			}
 		}
 	}
 
