@@ -139,7 +139,7 @@ const char *fragmentSource = R"(
 )";
 
 const int MAXDEPTH = 3;
-const float EPSILON = 0.00001f;
+const float EPSILON = 0.0001f;
 
 class Material {
 	public:
@@ -200,7 +200,7 @@ public:
 
 struct Intersectable {
 	Material material;
-	virtual Hit intersect(const Ray ray) = 0;
+	virtual Hit intersect(const Ray& ray) = 0;
 };
 
 class Sphere : public Intersectable {
@@ -211,7 +211,7 @@ public:
 		center = c;
 		radius = r;
 	}
-	Hit intersect(Ray ray) {
+	Hit intersect(const Ray& ray) {
 		Hit retval;
 		retval.material = &material;
 
@@ -255,9 +255,9 @@ public:
 
 class Scene {
 public:
-	Camera camera;
+	Camera* camera;
 	std::vector<Intersectable*> objects;
-	std::vector<Light> lights;
+	std::vector<Light*> lights;
 
 	Hit firstIntersect(Ray ray) {
 		Hit bestHit;
@@ -271,10 +271,10 @@ public:
 	}
 
 	Ray GetRay(int x, int y) {
-		vec3 _lookat = camera.lookat;
-		vec3 _right = camera.right*(x - windowWidth / 2.0) / (windowWidth / 2.0);
-		vec3 _up = camera.up*(y - windowHeight / 2.0) / (windowHeight / 2.0);
-		Ray ray(camera.position, (_lookat + _right + _up).normalize());
+		vec3 _lookat = camera->lookat;
+		vec3 _right = camera->right*(x - windowWidth / 2.0) / (windowWidth / 2.0);
+		vec3 _up = camera->up*(y - windowHeight / 2.0) / (windowHeight / 2.0);
+		Ray ray(camera->position, (_lookat + _right + _up).normalize());
 		return ray;
 
 	}
@@ -284,7 +284,7 @@ public:
 	}
 
 	vec3 trace(Ray ray, int depth) {
-		vec3 La;
+		vec3 La = vec3(0.8f,0.8f,0.8f);
 		if (depth > MAXDEPTH) {
 			return La;
 		}
@@ -293,11 +293,11 @@ public:
 		vec3 outRadiance;
 		outRadiance = La*hit.material->kd;
 		if (hit.material->rough) {
-			for (Light l : lights) {
-				Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.dir).normalize())), (l.position).normalize());
+			for (Light* l : lights) {
+				Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.dir*-1).normalize())), (l->position).normalize());
 				Hit shadowHit = firstIntersect(shadowRay);
 				if (shadowHit.t < 0 || shadowHit.t > 10000) {
-					outRadiance += hit.material->shade(hit.normal, (ray.dir).normalize(), (l.position).normalize(), l.color);
+					outRadiance += hit.material->shade(hit.normal, (ray.dir).normalize(), (l->position).normalize(), l->color);
 				}
 			}
 		}
@@ -372,15 +372,17 @@ void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
 
 	Material kek;
-	kek.F0 = 0.5f;
-	kek.kd = 0.5f;
-	kek.ks = 0.5f;
+	kek.F0 = vec3(0.5f,0.5f,0.5f);
+	kek.kd = vec3(0.5f, 0.5f, 0.5f);
+	kek.ks = vec3(0.5f, 0.5f, 0.5f);
 	kek.n = 0.5f;
 	kek.rough = true;
+	kek.refractive = false;
+	kek.reflective = false;
 
 	Light l;
 	l.color = vec3(0.5f, 0.5f, 0.5f);
-	l.position = vec3(100.0f, 300.0f, 300.0f);
+	l.position = vec3(100.0f, 500.0f, 0);
 
 	Sphere s = Sphere(vec3(0,0,300.0f), 100.0f);
 	s.material = kek;
@@ -391,8 +393,9 @@ void onInitialization() {
 	c.up = vec3(0,1.0f,0);
 	c.right = vec3(1.0f, 0, 0);
 
+	scene.camera = &c;
 	scene.objects.push_back(&s);
-	scene.lights.push_back(l);
+	scene.lights.push_back(&l);
 
 	// Ray tracing fills the image called background
 	for (int x = 0; x < windowWidth; x++) {
@@ -400,7 +403,7 @@ void onInitialization() {
 			Ray r = scene.GetRay(x, y);
 			background[y * windowWidth + x] = scene.trace(r, 0); // vec3((float)x / windowWidth, (float)y / windowHeight, 0);
 			if (background[y * windowWidth + x].x > 0.0f || background[y * windowWidth + x].y > 0.0f || background[y * windowWidth + x].z > 0.0f) {
-				printf("%f, %f, %f\n", background[y * windowWidth + x].x, background[y * windowWidth + x].y, background[y * windowWidth + x].z);
+				//printf("%f, %f, %f\n", background[y * windowWidth + x].x, background[y * windowWidth + x].y, background[y * windowWidth + x].z);
 			}
 		}
 	}
