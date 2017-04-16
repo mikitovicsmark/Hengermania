@@ -167,32 +167,57 @@ public:
 
 class Material {
 	public:
-		vec3 ka, kd, ks;
+		vec3 ka, kd, ks, F0;
 		float n, k;
-		boolean rough, reflective, refractive;
+		boolean reflective, refractive;
 
 		void SetDiffuseColor(vec3 Kd) { kd = Kd / M_PI; }
 		void SetSpecularColor(vec3 Ks) { ks = Ks * (n + 2) / M_PI / 2.0; }
 
-		vec3 Brdf(vec3 inDir, vec3 norm, vec3 outDir) {
+		vec3 reflect(vec3 inDir, vec3 normal)
+		{
+			return inDir - normal * dot(normal, inDir) * 2.0f;
+		};
 
-			float cosIn = -1.0f * dot(inDir,norm);
-			if (cosIn <= EPSILON) {
-				return vec3(); // ha az anyag belsejébol jövünk
-			}
-			vec3 retColor = kd; // diffúz BRDF
-			vec3 reflDir = norm * (2.0 * cosIn) + inDir; // tükörirány
-			float cosReflOut = dot(reflDir,outDir); // tükörirány-nézeti szöge
-			if (cosReflOut > EPSILON) { // spekuláris BRDF
-				retColor += ks * pow(cosReflOut, n) / cosIn;
-			}
-			return retColor;
+		vec3 refract(vec3 inDir, vec3 normal) {
+			float ior = n;
+			float cosa = -dot(normal, inDir);
+			if (cosa < 0) { cosa = -cosa; normal = -normal; ior = 1 / n; }
+			float disc = 1 - (1 - cosa * cosa) / ior / ior;
+			if (disc < 0) { return reflect(inDir, normal); }
+			return inDir / ior + normal * (cosa / ior - sqrt(disc));
+		}
+
+		vec3 Fresnel(vec3 inDir, vec3 normal) {
+			float cosa = fabs(dot(normal, inDir));
+			return F0 + (vec3(1, 1, 1) - F0) * pow(1 - cosa, 5);
+		}
+
+		vec3 shade(vec3 normal, vec3 viewDir, vec3 lightDir, vec3 inRad)
+		{
+			vec3 reflRad(0, 0, 0);
+			float cosTheta = dot(normal, lightDir);
+			if (cosTheta < 0) return reflRad;
+			reflRad = inRad * kd * cosTheta;;
+			vec3 halfway = (viewDir + lightDir).normalize();
+			float cosDelta = dot(normal, halfway);
+			if (cosDelta < 0) return reflRad;
+			return reflRad + inRad * ks * pow(cosDelta, n);
 		}
 };
 
 class Camera {
 public:
-	vec3 position;
+	vec3 eyep; // pozíció
+	vec3 lookp; // hova néz
+	vec3 updir; // felfele irány
+	float viewdist; // fókusztávolság
+	float fov, hfov, vfov; // látószögek radiánban
+	float nearClip, farClip; // közeli és távoli vágósik
+	int hres, vres; // szélesség, magasság pixelben
+					// kamera koordinátarendszer: X=jobbra, Y=le, Z=nézeti irány
+	float X, Y, Z;
+	float pixh, pixv; // egy pixel szélessége, magassága
 };
 
 class Light {
@@ -219,6 +244,19 @@ public:
 		return bestHit;
 	}
 
+	//-----------------------------------------------------------------
+	Ray GetRay(int x, int y) {
+		//-----------------------------------------------------------------
+		float h = camera.pixh; // pixel horizontális mérete
+		float v = camera.pixv; // pixel vertikális mérete
+									 // az aktuális pixel középpontja
+		float pixX = -h * camera.hres / 2.0 + x * h + h / 2.0;
+		float pixY = -v * camera.vres / 2.0 + y * v + v / 2.0;
+		vec3 rayDir = (camera.Z + pixX*camera.X + pixY*camera.Y);
+		rayDir.normalize();
+		return Ray(camera.eyep, rayDir); // a sugár a szemb˝ol
+	}
+
 	int sign(float f) {
 		return f < 0 ? -1 : 1;
 	}
@@ -231,16 +269,25 @@ public:
 		Hit hit = firstIntersect(ray);
 		if (hit.t < 0) { return La; };
 		vec3 outRadiance;
-		if (hit.material.rough) {
-			outRadiance = La*hit.material.ks;
-			for (Light l : lights) {
-				Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, ray.Dir()*-1)), (l.position*-1).normalize());
-				Hit shadowHit = firstIntersect(shadowRay);
-				if (shadowHit.t < 0 || shadowHit.t > 2) {
-					outRadiance += hit.material.shade
-				}
+		outRadiance = La*hit.material.ka;
+		for (Light l : lights) {
+			Ray shadowRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.Dir()*-1).normalize())), (l.position*-1).normalize());
+			Hit shadowHit = firstIntersect(shadowRay);
+			if (shadowHit.t < 0 || shadowHit.t > 2) {
+				outRadiance += hit.material.shade(hit.normal, (ray.Dir()*-1).normalize(), (l.position*-1).normalize(), l.color);
 			}
 		}
+		if (hit.material.reflective) {
+			vec3 reflectionDir = hit.material.reflect(ray.Dir(), hit.normal).normalize();
+			Ray reflectedRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.Dir()*-1).normalize())), reflectionDir);
+			outRadiance += trace(reflectedRay, depth + 1)*hit.material.Fresnel(ray.Dir().normalize(), hit.normal);
+		}
+		if (hit.material.refractive) {
+			vec3 refractionDir = hit.material.refract(ray.Dir(), hit.normal).normalize();
+			Ray refractedRay(hit.position + hit.normal*EPSILON*sign(dot(hit.normal, (ray.Dir()*-1).normalize())), refractionDir);
+			outRadiance += trace(refractedRay, depth + 1)*(vec3(1, 1, 1) - hit.material.Fresnel(ray.Dir().normalize(), hit.normal));
+		}
+		return outRadiance;
 		
 	}
 };
@@ -290,6 +337,7 @@ public:
 
 // The virtual world: single quad
 FullScreenTexturedQuad fullScreenTexturedQuad;
+Scene scene;
 
 vec3 background[windowWidth * windowHeight];	// The image, which stores the ray tracing result
 
@@ -301,7 +349,8 @@ void onInitialization() {
 	// Ray tracing fills the image called background
 	for (int x = 0; x < windowWidth; x++) {
 		for (int y = 0; y < windowHeight; y++) {
-			background[y * windowWidth + x] = vec3((float)x / windowWidth, (float)y / windowHeight, 0);
+			Ray r = scene.GetRay(x, y);
+			background[y * windowWidth + x] = scene.trace(r, 0); // vec3((float)x / windowWidth, (float)y / windowHeight, 0);
 		}
 	}
 
